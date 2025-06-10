@@ -12,29 +12,33 @@ extension Application {
         }
 
         public var containers: APNSContainers {
-            if let existingContainers = self.application.storage[ContainersKey.self] {
-                return existingContainers
-            } else {
-                let lock = self.application.locks.lock(for: ContainersKey.self)
-                lock.lock()
-                defer { lock.unlock() }
-                let new = APNSContainers()
-                self.application.storage.set(ContainersKey.self, to: new) {
-                    $0.syncShutdown()
+            get async {
+                if let existingContainers = self.application.storage[ContainersKey.self] {
+                    return existingContainers
+                } else {
+                    let lock = self.application.locks.lock(for: ContainersKey.self)
+                    lock.lock()
+                    defer { lock.unlock() }
+                    let new = APNSContainers()
+                    await self.application.storage.setWithAsyncShutdown(ContainersKey.self, to: new) { key in
+                        await key.shutdown()
+                    }
+                    return new
                 }
-                return new
             }
         }
 
         public var client: APNSGenericClient {
-            guard let container = containers.container() else {
-                fatalError("No default APNS container configured.")
+            get async {
+                guard let container = await containers.container() else {
+                    fatalError("No default APNS container configured.")
+                }
+                return container.client
             }
-            return container.client
         }
 
-        public func client(_ id: APNSContainers.ID = .default) -> APNSGenericClient {
-            guard let container = containers.container(for: id) else {
+        public func client(_ id: APNSContainers.ID = .default) async -> APNSGenericClient {
+            guard let container = await containers.container(for: id) else {
                 fatalError("No APNS container for \(id).")
             }
             return container.client
@@ -85,8 +89,8 @@ extension Application.APNS {
     /// - Important: Make sure not to store your APNs key within your code or repo directly, and opt to store it via a secure store specific to your deployment, such as in a .env supplied at deploy time.
     ///
     /// - Parameter authenticationMethod: An APNs authentication method to use when connecting to Apple's production and development servers.
-    public func configure(_ authenticationMethod: APNSClientConfiguration.AuthenticationMethod) {
-        containers.use(
+    public func configure(_ authenticationMethod: APNSClientConfiguration.AuthenticationMethod) async {
+        await containers.use(
             APNSClientConfiguration(
                 authenticationMethod: authenticationMethod,
                 environment: .production
@@ -97,10 +101,10 @@ extension Application.APNS {
             as: .production
         )
         
-        containers.use(
+        await containers.use(
             APNSClientConfiguration(
                 authenticationMethod: authenticationMethod,
-                environment: .sandbox
+                environment: .development
             ),
             eventLoopGroupProvider: .shared(application.eventLoopGroup),
             responseDecoder: JSONDecoder(),
