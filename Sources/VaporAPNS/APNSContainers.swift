@@ -1,5 +1,6 @@
 import Vapor
 import APNS
+import Logging
 #if canImport(Darwin)
 import Foundation
 #else
@@ -32,20 +33,24 @@ public final actor APNSContainers: Sendable {
 
     private var containers: [ID: Container]
     private var defaultID: ID?
+    private let logger: Logger
 
     init() {
         self.containers =  [:]
         self.defaultID = nil
+        self.logger = Logger(label: "codes.vapor.apns.containers")
     }
 
     public func shutdown() async {
-        do {
-            for container in self.containers.values {
+        for container in self.containers.values {
+            do {
                 try await container.client.shutdown()
+            } catch {
+                // Log the error but continue shutting down other containers
+                logger.warning("Failed to shutdown APNS container", metadata: ["error": "\(error)"])
             }
-        } catch {
-            fatalError("Could not shutdown APNS Containers")
         }
+        self.containers.removeAll()
     }
 }
 
