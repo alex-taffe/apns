@@ -1,39 +1,37 @@
 import APNS
 import VaporAPNS
-import XCTVapor
+import Testing
+import Vapor
+import VaporTesting
 import NIOCore
 import NIOPosix
 
-class VaporAPNSIntegrationTests: XCTestCase {
-    struct Payload: Codable {
-        let message: String
-    }
-    
-    let appleECP8PrivateKey = """
-    -----BEGIN PRIVATE KEY-----
-    MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg2sD+kukkA8GZUpmm
-    jRa4fJ9Xa/JnIG4Hpi7tNO66+OGgCgYIKoZIzj0DAQehRANCAATZp0yt0btpR9kf
-    ntp4oUUzTV0+eTELXxJxFvhnqmgwGAm1iVW132XLrdRG/ntlbQ1yzUuJkHtYBNve
-    y+77Vzsd
-    -----END PRIVATE KEY-----
-    """
-    
-    var app: Application!
-    
-    override func setUp() async throws {
-        try await super.setUp()
-        app = try await Application.make(.testing)
-    }
-    
-    override func tearDown() async throws {
-        if app != nil {
+private struct Payload: Codable {
+    let message: String
+}
+
+private let appleECP8PrivateKey = """
+-----BEGIN PRIVATE KEY-----
+MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg2sD+kukkA8GZUpmm
+jRa4fJ9Xa/JnIG4Hpi7tNO66+OGgCgYIKoZIzj0DAQehRANCAATZp0yt0btpR9kf
+ntp4oUUzTV0+eTELXxJxFvhnqmgwGAm1iVW132XLrdRG/ntlbQ1yzUuJkHtYBNve
+y+77Vzsd
+-----END PRIVATE KEY-----
+"""
+
+private func withApp<T>(_ test: (Application) async throws -> T) async throws -> T {
+    let app = try await Application.make(.testing)
+    defer {
+        Task {
             try await app.asyncShutdown()
         }
-        try await super.tearDown()
     }
-    
-    func testAPNSContainerConfiguration() async throws {
-        // Test that we can configure APNS containers
+    return try await test(app)
+}
+
+@Test("APNS Container Configuration")
+func testAPNSContainerConfiguration() async throws {
+    try await withApp { app in
         let apnsConfig = APNSClientConfiguration(
             authenticationMethod: .jwt(
                 privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
@@ -53,12 +51,15 @@ class VaporAPNSIntegrationTests: XCTestCase {
         
         // Verify that the container is configured
         let container = await app.apns.containers.container()
-        XCTAssertNotNil(container)
+        #expect(container != nil)
         // Note: APNSEnvironment doesn't conform to Equatable, so we verify configuration exists
-        XCTAssertNotNil(container?.configuration)
+        #expect(container?.configuration != nil)
     }
-    
-    func testAPNSClientAccessFromRequest() async throws {
+}
+
+@Test("APNS Client Access From Request")
+func testAPNSClientAccessFromRequest() async throws {
+    try await withApp { app in
         // Configure APNS first
         let apnsConfig = APNSClientConfiguration(
             authenticationMethod: .jwt(
@@ -80,16 +81,19 @@ class VaporAPNSIntegrationTests: XCTestCase {
         // Test that we can access APNS client from request
         app.get("test-apns-access") { req async -> HTTPStatus in
             let container = await req.application.apns.containers.container()
-            XCTAssertNotNil(container)
+            #expect(container != nil)
             return .ok
         }
         
-        try await app.test(.GET, "test-apns-access") { res in
-            XCTAssertEqual(res.status, .ok)
+        try await app.testing().test(.GET, "test-apns-access") { response async in
+            #expect(response.status == .ok)
         }
     }
-    
-    func testMultipleAPNSContainers() async throws {
+}
+
+@Test("Multiple APNS Containers")
+func testMultipleAPNSContainers() async throws {
+    try await withApp { app in
         // Test configuring multiple APNS containers
         let productionConfig = APNSClientConfiguration(
             authenticationMethod: .jwt(
@@ -129,13 +133,16 @@ class VaporAPNSIntegrationTests: XCTestCase {
         let productionContainer = await app.apns.containers.container(for: .production)
         let developmentContainer = await app.apns.containers.container(for: .development)
         
-        XCTAssertNotNil(productionContainer)
-        XCTAssertNotNil(developmentContainer)
-        XCTAssertNotNil(productionContainer?.configuration)
-        XCTAssertNotNil(developmentContainer?.configuration)
+        #expect(productionContainer != nil)
+        #expect(developmentContainer != nil)
+        #expect(productionContainer?.configuration != nil)
+        #expect(developmentContainer?.configuration != nil)
     }
-    
-    func testAPNSContainerShutdown() async throws {
+}
+
+@Test("APNS Container Shutdown")
+func testAPNSContainerShutdown() async throws {
+    try await withApp { app in
         // Test that containers can be shut down properly
         let apnsConfig = APNSClientConfiguration(
             authenticationMethod: .jwt(
@@ -156,13 +163,16 @@ class VaporAPNSIntegrationTests: XCTestCase {
         
         // Verify container is configured
         let container = await app.apns.containers.container()
-        XCTAssertNotNil(container)
+        #expect(container != nil)
         
         // Test shutdown - this should not throw
         await app.apns.containers.shutdown()
     }
-    
-    func testConvenienceConfigurationMethod() async throws {
+}
+
+@Test("Convenience Configuration Method")
+func testConvenienceConfigurationMethod() async throws {
+    try await withApp { app in
         // Test the convenience configure method that sets up both production and development
         await app.apns.configure(.jwt(
             privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
@@ -174,23 +184,25 @@ class VaporAPNSIntegrationTests: XCTestCase {
         let productionContainer = await app.apns.containers.container(for: .production)
         let developmentContainer = await app.apns.containers.container(for: .development)
         
-        XCTAssertNotNil(productionContainer)
-        XCTAssertNotNil(developmentContainer)
-        XCTAssertNotNil(productionContainer?.configuration)
-        XCTAssertNotNil(developmentContainer?.configuration)
+        #expect(productionContainer != nil)
+        #expect(developmentContainer != nil)
+        #expect(productionContainer?.configuration != nil)
+        #expect(developmentContainer?.configuration != nil)
     }
-    
-    func testRequestAPNSProperty() throws {
+}
+
+@Test("Request APNS Property")
+func testRequestAPNSProperty() async throws {
+    try await withApp { app in
         // Test that request.apns returns the correct APNS instance
         app.get("test-request-apns") { req async -> HTTPStatus in
-            let apns = req.apns
-            XCTAssertNotNil(apns)
+            let _ = req.apns
             // Note: application property is internal, so just verify apns exists
             return .ok
         }
         
-        try app.test(.GET, "test-request-apns") { res in
-            XCTAssertEqual(res.status, .ok)
+        try await app.testing().test(.GET, "test-request-apns") { response async in
+            #expect(response.status == .ok)
         }
     }
 } 

@@ -1,28 +1,34 @@
 import APNS
 import VaporAPNS
-import XCTVapor
+import Testing
+import Vapor
+import VaporTesting
 
-class APNSTests: XCTestCase {
-    struct Payload: Codable {}
-    let appleECP8PrivateKey = """
-    -----BEGIN PRIVATE KEY-----
-    MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg2sD+kukkA8GZUpmm
-    jRa4fJ9Xa/JnIG4Hpi7tNO66+OGgCgYIKoZIzj0DAQehRANCAATZp0yt0btpR9kf
-    ntp4oUUzTV0+eTELXxJxFvhnqmgwGAm1iVW132XLrdRG/ntlbQ1yzUuJkHtYBNve
-    y+77Vzsd
-    -----END PRIVATE KEY-----
-    """
+private struct Payload: Codable {}
 
-    func testApplication() throws {
-        let app = Application(.testing)
-        defer { 
-            // Shutdown APNS containers first, then the app
-            try! app.eventLoopGroup.next().makeFutureWithTask {
-                await app.apns.containers.shutdown()
-            }.wait()
-            app.shutdown() 
+private let appleECP8PrivateKey = """
+-----BEGIN PRIVATE KEY-----
+MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg2sD+kukkA8GZUpmm
+jRa4fJ9Xa/JnIG4Hpi7tNO66+OGgCgYIKoZIzj0DAQehRANCAATZp0yt0btpR9kf
+ntp4oUUzTV0+eTELXxJxFvhnqmgwGAm1iVW132XLrdRG/ntlbQ1yzUuJkHtYBNve
+y+77Vzsd
+-----END PRIVATE KEY-----
+"""
+
+private func withApp<T>(_ test: (Application) async throws -> T) async throws -> T {
+    let app = try await Application.make(.testing)
+    defer {
+        Task {
+            await app.apns.containers.shutdown()
+            try await app.asyncShutdown()
         }
-        
+    }
+    return try await test(app)
+}
+
+@Test("Application")
+func testApplication() async throws {
+    try await withApp { app in
         let apnsConfig = APNSClientConfiguration(
             authenticationMethod: .jwt(
                 privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
@@ -32,16 +38,13 @@ class APNSTests: XCTestCase {
             environment: .development
         )
 
-        // Use eventLoopGroup.next().wait() to run async code in sync context
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                apnsConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .default
-            )
-        }.wait()
+        await app.apns.containers.use(
+            apnsConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .default
+        )
 
         app.get("test-push") { req -> HTTPStatus in
             try await req.apns.client.sendAlertNotification(
@@ -59,21 +62,16 @@ class APNSTests: XCTestCase {
             )
             return .ok
         }
-        try app.test(.GET, "test-push") { res in
-            XCTAssertEqual(res.status, .internalServerError)
+        
+        try await app.testing().test(.GET, "test-push") { response async in
+            #expect(response.status == .internalServerError)
         }
     }
+}
 
-    func testContainers() throws {
-        let app = Application(.testing)
-        defer { 
-            // Shutdown APNS containers first, then the app
-            try! app.eventLoopGroup.next().makeFutureWithTask {
-                await app.apns.containers.shutdown()
-            }.wait()
-            app.shutdown() 
-        }
-        
+@Test("Containers")
+func testContainers() async throws {
+    try await withApp { app in
         app.logger.logLevel = .trace
         let authConfig: APNSClientConfiguration.AuthenticationMethod = .jwt(
             privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
@@ -86,41 +84,34 @@ class APNSTests: XCTestCase {
             environment: .development
         )
 
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                apnsConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .default
-            )
-        }.wait()
+        await app.apns.containers.use(
+            apnsConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .default
+        )
 
-        let defaultContainer = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container()
-        }.wait()
+        let defaultContainer = await app.apns.containers.container()
         
-        XCTAssertNotNil(defaultContainer)
+        #expect(defaultContainer != nil)
         
-        let defaultMethodContainer = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container(for: .default)!
-        }.wait()
+        let defaultMethodContainer = await app.apns.containers.container(for: .default)!
         
-        let defaultComputedContainer = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container!
-        }.wait()
+        let defaultComputedContainer = await app.apns.containers.container!
         
-        XCTAssert(defaultContainer === defaultMethodContainer)
-        XCTAssert(defaultContainer === defaultComputedContainer)
+        #expect(defaultContainer === defaultMethodContainer)
+        #expect(defaultContainer === defaultComputedContainer)
 
         app.get("test-push") { req -> HTTPStatus in
             let client = await req.apns.client
-            XCTAssert(client === defaultContainer?.client)
+            #expect(client === defaultContainer?.client)
 
             return .ok
         }
-        try app.test(.GET, "test-push") { res in
-            XCTAssertEqual(res.status, .ok)
+        
+        try await app.testing().test(.GET, "test-push") { response async in
+            #expect(response.status == .ok)
         }
 
         let customConfig: APNSClientConfiguration = .init(
@@ -128,169 +119,143 @@ class APNSTests: XCTestCase {
             environment: .custom(url: "http://apple.com")
         )
 
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                customConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .custom
-            )
-        }.wait()
+        await app.apns.containers.use(
+            customConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .custom
+        )
 
-        let containerPostCustom = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container()
-        }.wait()
+        let containerPostCustom = await app.apns.containers.container()
         
-        XCTAssertNotNil(containerPostCustom)
+        #expect(containerPostCustom != nil)
+        
         app.get("test-push2") { req -> HTTPStatus in
             let client = await req.apns.client
-            XCTAssert(client === containerPostCustom?.client)
+            #expect(client === containerPostCustom?.client)
             return .ok
         }
-        try app.test(.GET, "test-push2") { res in
-            XCTAssertEqual(res.status, .ok)
-        }
-    }
-
-    func testCustomContainers() throws {
-        let app = Application(.testing)
-        defer { 
-            // Shutdown APNS containers first, then the app
-            try! app.eventLoopGroup.next().makeFutureWithTask {
-                await app.apns.containers.shutdown()
-            }.wait()
-            app.shutdown() 
-        }
         
-        let authConfig: APNSClientConfiguration.AuthenticationMethod = .jwt(
-            privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
-            keyIdentifier: "9UC9ZLQ8YW",
-            teamIdentifier: "ABBM6U9RM5"
-        )
-
-        let apnsConfig = APNSClientConfiguration(
-            authenticationMethod: authConfig,
-            environment: .development
-        )
-
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                apnsConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .default,
-                isDefault: true
-            )
-        }.wait()
-
-        let customConfig: APNSClientConfiguration = .init(
-            authenticationMethod: authConfig,
-            environment: .custom(url: "http://apple.com")
-        )
-
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                customConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .custom,
-                isDefault: true
-            )
-        }.wait()
-
-        let containerPostCustom = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container()
-        }.wait()
-        
-        XCTAssertNotNil(containerPostCustom)
-        app.get("test-push2") { req -> HTTPStatus in
-            let client = await req.apns.client
-            XCTAssert(client === containerPostCustom?.client)
-            
-            return .ok
-        }
-        try app.test(.GET, "test-push2") { res in
-            XCTAssertEqual(res.status, .ok)
-        }
-    }
-
-    func testNonDefaultContainers() throws {
-        let app = Application(.testing)
-        defer { 
-            // Shutdown APNS containers first, then the app
-            try! app.eventLoopGroup.next().makeFutureWithTask {
-                await app.apns.containers.shutdown()
-            }.wait()
-            app.shutdown() 
-        }
-        
-        let authConfig: APNSClientConfiguration.AuthenticationMethod = .jwt(
-            privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
-            keyIdentifier: "9UC9ZLQ8YW",
-            teamIdentifier: "ABBM6U9RM5"
-        )
-
-        let apnsConfig = APNSClientConfiguration(
-            authenticationMethod: authConfig,
-            environment: .development
-        )
-
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                apnsConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .default,
-                isDefault: true
-            )
-        }.wait()
-
-        let customConfig: APNSClientConfiguration = .init(
-            authenticationMethod: authConfig,
-            environment: .custom(url: "http://apple.com")
-        )
-
-        try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.use(
-                customConfig,
-                eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
-                responseDecoder: JSONDecoder(),
-                requestEncoder: JSONEncoder(),
-                as: .custom
-            )
-        }.wait()
-
-        let containerPostCustom = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container()
-        }.wait()
-        
-        let containerNonDefaultCustom = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container(for: .custom)
-        }.wait()
-        
-        let customContainer = try app.eventLoopGroup.next().makeFutureWithTask {
-            await app.apns.containers.container(for: .custom)
-        }.wait()
-        
-        XCTAssert(customContainer !== containerPostCustom)
-        XCTAssertNotNil(containerPostCustom)
-        app.get("test-push2") { req -> HTTPStatus in
-            let customClient = await req.apns.client(.custom)
-            XCTAssert(customClient !== containerPostCustom?.client)
-            XCTAssert(customClient === containerNonDefaultCustom?.client)
-            return .ok
-        }
-        try app.test(.GET, "test-push2") { res in
-            XCTAssertEqual(res.status, .ok)
+        try await app.testing().test(.GET, "test-push2") { response async in
+            #expect(response.status == .ok)
         }
     }
 }
 
-fileprivate extension APNSContainers.ID {
+@Test("Custom Containers")
+func testCustomContainers() async throws {
+    try await withApp { app in
+        let authConfig: APNSClientConfiguration.AuthenticationMethod = .jwt(
+            privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
+            keyIdentifier: "9UC9ZLQ8YW",
+            teamIdentifier: "ABBM6U9RM5"
+        )
+
+        let apnsConfig = APNSClientConfiguration(
+            authenticationMethod: authConfig,
+            environment: .development
+        )
+
+        await app.apns.containers.use(
+            apnsConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .default,
+            isDefault: true
+        )
+
+        let customConfig: APNSClientConfiguration = .init(
+            authenticationMethod: authConfig,
+            environment: .custom(url: "http://apple.com")
+        )
+
+        await app.apns.containers.use(
+            customConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .custom,
+            isDefault: true
+        )
+
+        let containerPostCustom = await app.apns.containers.container()
+        
+        #expect(containerPostCustom != nil)
+        
+        app.get("test-push2") { req -> HTTPStatus in
+            let client = await req.apns.client
+            #expect(client === containerPostCustom?.client)
+            
+            return .ok
+        }
+        
+        try await app.testing().test(.GET, "test-push2") { response async in
+            #expect(response.status == .ok)
+        }
+    }
+}
+
+@Test("Non-Default Containers")
+func testNonDefaultContainers() async throws {
+    try await withApp { app in
+        let authConfig: APNSClientConfiguration.AuthenticationMethod = .jwt(
+            privateKey: try .init(pemRepresentation: appleECP8PrivateKey),
+            keyIdentifier: "9UC9ZLQ8YW",
+            teamIdentifier: "ABBM6U9RM5"
+        )
+
+        let apnsConfig = APNSClientConfiguration(
+            authenticationMethod: authConfig,
+            environment: .development
+        )
+
+        await app.apns.containers.use(
+            apnsConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .default,
+            isDefault: true
+        )
+
+        let customConfig: APNSClientConfiguration = .init(
+            authenticationMethod: authConfig,
+            environment: .custom(url: "http://apple.com")
+        )
+
+        await app.apns.containers.use(
+            customConfig,
+            eventLoopGroupProvider: .shared(MultiThreadedEventLoopGroup.singleton),
+            responseDecoder: JSONDecoder(),
+            requestEncoder: JSONEncoder(),
+            as: .custom
+        )
+
+        let containerPostCustom = await app.apns.containers.container()
+        
+        let containerNonDefaultCustom = await app.apns.containers.container(for: .custom)
+        
+        let customContainer = await app.apns.containers.container(for: .custom)
+        
+        #expect(customContainer !== containerPostCustom)
+        #expect(containerPostCustom != nil)
+        
+        app.get("test-push2") { req -> HTTPStatus in
+            let customClient = await req.apns.client(.custom)
+            #expect(customClient !== containerPostCustom?.client)
+            #expect(customClient === containerNonDefaultCustom?.client)
+            return .ok
+        }
+        
+        try await app.testing().test(.GET, "test-push2") { response async in
+            #expect(response.status == .ok)
+        }
+    }
+}
+
+extension APNSContainers.ID {
     static var custom: APNSContainers.ID {
         return .init(string: "custom")
     }

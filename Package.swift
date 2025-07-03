@@ -12,7 +12,7 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/swift-server-community/APNSwift.git", from: "6.1.0"),
-    .package(url: "https://github.com/vapor/vapor.git", from: "4.101.0"),
+    .package(url: "https://github.com/vapor/vapor.git", from: "4.110.1"),
   ],
   targets: [
     .target(
@@ -25,7 +25,7 @@ let package = Package(
       name: "VaporAPNSTests",
       dependencies: [
         .target(name: "VaporAPNS"),
-        .product(name: "XCTVapor", package: "vapor"),
+        .product(name: "VaporTesting", package: "vapor"),
       ]),
   ]
 )
